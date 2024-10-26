@@ -1,0 +1,42 @@
+#!/bin/bash
+
+if [ -z "$1" ]; then
+  echo "Usage: $0 <worker-name>"
+  exit 1
+fi
+
+WORKER_NAME=$1
+
+mkdir $WORKER_NAME
+cd $WORKER_NAME
+
+npm init -y
+npm install wrangler --save-dev
+
+mkdir dist
+mkdir dist/src
+cat <<EOL > dist/src/worker.js
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request))
+})
+
+async function handleRequest(request) {
+  return new Response('Hello, $WORKER_NAME', {
+    headers: { 'content-type': 'text/plain' },
+  })
+}
+EOL
+
+cat <<EOL > wrangler.toml
+name = "$WORKER_NAME"
+type = "javascript"
+compatibility_date = "$(date +%Y-%m-%d)"
+
+[build]
+upload = { main = "./src/worker.js" }
+EOL
+
+npx wrangler login
+npx wrangler publish
+
+echo "Worker $WORKER_NAME has been deployed"

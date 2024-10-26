@@ -1,0 +1,170 @@
+#!/bin/bash
+
+set -e
+
+if [ -z "$1" ]; then
+  echo "Usage: $0 <worker-name>"
+  exit 1
+fi
+
+WORKER_NAME=$1
+DOMAIN_NAME="icewatch.io"
+
+mkdir -p $WORKER_NAME
+cd $WORKER_NAME
+
+cat <<EOT > wrangler.toml
+name = "$WORKER_NAME"
+main = "src/index.ts"
+compatibility_date = "2024-10-22"
+
+routes = [
+  { pattern = "$WORKER_NAME.$DOMAIN_NAME", custom_domain = true }
+]
+EOT
+
+cat <<EOT > package.json
+{
+  "name": "$WORKER_NAME",
+  "version": "0.0.1",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241022.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^3.83.0"
+  },
+  "private": true,
+  "scripts": {
+    "start": "wrangler dev",
+    "deploy": "wrangler deploy"
+  }
+}
+EOT
+
+mkdir -p src
+cd src
+cat <<EOT > index.ts
+import {Router} from './router';
+import {Utils} from './utils';
+
+const routes = new Router();
+const utils = new Utils();
+
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<Response> {
+    return routes.routeRequest(request);
+  },
+};
+
+routes.get('/', async (request: Request) => {
+  return new Response('Hello, world!');
+});
+
+routes.post('/', async (request: Request) => {
+  const requestBody: any = utils.readRequestBody(request);
+  return new Response(requestBody, {
+    status: 200
+  });
+});
+EOT
+
+cat <<EOT > router.ts
+export interface Route {
+  path: string;
+  handler: Function;
+}
+
+export interface Router {
+  getRoutes: Route[];
+  postRoutes: Route[];
+}
+
+export class Router {
+  constructor() {
+    this.getRoutes = [];
+    this.postRoutes = [];
+  }
+
+  get = (path: string, handler: Function) => {
+    this.getRoutes.push({path, handler} as Route);
+  };
+
+  post = (path: string, handler: Function) => {
+    this.postRoutes.push({path, handler} as Route);
+  };
+
+  defaultRoute = (request: Request) => {
+    return new Response('404 Not Found', {
+      status: 404,
+    });
+  };
+
+  routeRequest = (request: Request) => {
+    const requestPath = new URL(request.url).pathname;
+
+    let routes: Route[] = [];
+    if (request.method === 'GET') {
+      routes = this.getRoutes;
+    } else if (request.method === 'POST') {
+      routes = this.postRoutes;
+    }
+
+    // Search for a route that matches the request
+    for (let i = 0; i < routes.length; i++) {
+      const route = routes[i];
+      const routePath =
+        route.path.indexOf('/:') > -1
+          ? route.path.split('/:')[0] + '/'
+          : route.path;
+      const routeVar =
+        route.path.indexOf('/:') > -1 ? requestPath.replace(routePath, '') : '';
+
+      if (routeVar) {
+        if (requestPath.indexOf(routePath) === 0) {
+          return route.handler(request, routeVar);
+        }
+      } else {
+        if (requestPath === routePath) {
+          return route.handler(request);
+        }
+      }
+    }
+
+    return this.defaultRoute(request);
+  };
+}
+EOT
+
+cat <<EOT > utils.ts
+export class Utils {
+  /**
+   * Reads the request body based on the content type specified in the
+   * Content-Type header and returns it.
+   * @param {Request} request the incoming request to read from
+   * @returns {Promise<any>} the request body
+   */
+  readRequestBody = async (request: Request) => {
+    const {headers} = request;
+    const contentType = headers.get('content-type') || '';
+
+    if (contentType.includes('application/json')) {
+      return await request.json();
+    } else if (contentType.includes('form')) {
+      const formData = await request.formData();
+      const body: any = {};
+      for (const entry of formData.entries()) {
+        body[entry[0]] = entry[1];
+      }
+      return JSON.stringify(body);
+    }
+    return await request.text();
+  };
+}
+EOT
+
+cd ..
+npm install
+npm run deploy
